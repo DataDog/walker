@@ -26,26 +26,6 @@ func Walk(root string, walkFn func(pathname string, fi os.FileInfo) error, opts 
 func WalkWithContext(ctx context.Context, root string, walkFn func(pathname string, fi os.FileInfo) error, opts ...Option) error {
 	wg, ctx := errgroup.WithContext(ctx)
 
-	fi, err := os.Lstat(root)
-	if err != nil {
-		return err
-	}
-	if err = walkFn(root, fi); err == filepath.SkipDir {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&fs.ModeSymlink != 0 {
-		fi, err = os.Stat(root)
-		if err != nil {
-			return err
-		}
-	}
-	if !fi.IsDir() {
-		return nil
-	}
-
 	cpuLimit := runtime.NumCPU()
 	if cpuLimit < 4 {
 		cpuLimit = 4
@@ -54,7 +34,8 @@ func WalkWithContext(ctx context.Context, root string, walkFn func(pathname stri
 	w := walker{
 		counter: 1,
 		options: walkerOptions{
-			limit: cpuLimit,
+			limit:         cpuLimit,
+			errorCallback: func(_ string, err error) error { return err },
 		},
 		ctx: ctx,
 		wg:  wg,
@@ -66,6 +47,26 @@ func WalkWithContext(ctx context.Context, root string, walkFn func(pathname stri
 		if err != nil {
 			return err
 		}
+	}
+
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return w.options.errorCallback(root, err)
+	}
+	if err = walkFn(root, fi); err == filepath.SkipDir {
+		return nil
+	}
+	if err != nil {
+		return w.options.errorCallback(root, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		fi, err = os.Stat(root)
+		if err != nil {
+			return w.options.errorCallback(root, err)
+		}
+	}
+	if !fi.IsDir() {
+		return nil
 	}
 
 	w.wg.Go(func() error {
@@ -91,7 +92,7 @@ func (w *walker) walk(dirname string, fi os.FileInfo) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return w.options.errorCallback(pathname, err)
 	}
 
 	// don't follow symbolic links
